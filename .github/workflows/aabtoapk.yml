@@ -1,0 +1,100 @@
+name: Universal AAB to APK Converter
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_url:
+        description: 'Release URL (e.g., https://github.com/Arcthesia/ArcCreate/releases/tag/1.2.68)'
+        required: true
+        type: string
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Download and Setup bundletool
+        run: |
+          BUNDLETOOL_VERSION=$(curl -s https://api.github.com/repos/google/bundletool/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          wget https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar -O bundletool.jar
+
+      - name: Parse URL and Fetch Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ inputs.release_url }}
+        run: |
+          # 自动从类似 https://github.com/owner/repo/releases/tag/tag_name 的链接中解析参数
+          CLEAN_URL=${URL#https://github.com/}
+          OWNER=$(echo "$CLEAN_URL" | cut -d'/' -f1)
+          REPO=$(echo "$CLEAN_URL" | cut -d'/' -f2)
+          TAG=$(echo "$URL" | awk -F'/releases/tag/' '{print $2}')
+
+          echo "Parsed Owner: $OWNER"
+          echo "Parsed Repo:  $REPO"
+          echo "Parsed Tag:   $TAG"
+
+          if [ -z "$OWNER" ] || [ -z "$REPO" ] || [ -z "$TAG" ]; then
+            echo "Error: Invalid Release URL format!"
+            exit 1
+          fi
+
+          mkdir -p workspace/input workspace/output extracted_temp
+          cd workspace/input
+
+          echo "Downloading assets from $OWNER/$REPO ($TAG)..."
+          gh release download "$TAG" --repo "$OWNER/$REPO"
+
+          cd ../..
+          echo "Extracting and converting AAB..."
+
+          find workspace/input -type f | while read -r file; do
+            filename=$(basename "$file")
+            ext="${filename##*.}"
+            if [ "$ext" = "zip" ]; then
+              mkdir -p "extracted_temp/$filename"
+              unzip -q "$file" -d "extracted_temp/$filename"
+            elif [ "$ext" = "aab" ]; then
+              cp "$file" extracted_temp/
+            fi
+          done
+
+          find extracted_temp -name "*.aab" | while read -r aab_file; do
+            base_name=$(basename "$aab_file" .aab)
+            
+            java -jar bundletool.jar build-apks \
+              --bundle="$aab_file" \
+              --output="workspace/output/${base_name}.apks" \
+              --mode=universal
+
+            unzip -q "workspace/output/${base_name}.apks" -d "workspace/output/extracted_${base_name}"
+            
+            if [ -f "workspace/output/extracted_${base_name}/universal.apk" ]; then
+              mv "workspace/output/extracted_${base_name}/universal.apk" "workspace/output/${base_name}-universal.apk"
+            fi
+          done
+
+          rm -rf workspace/output/*.apks extracted_temp workspace/output/extracted_*
+          
+          # 把解析出来的 tag 存到环境变量文件供下一步使用
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "REPO_NAME=$REPO" >> $GITHUB_ENV
+
+      - name: Create Release and Upload APK
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: "apk-${{ env.REPO_NAME }}-${{ env.TAG }}"
+          name: "Universal APK for ${{ env.REPO_NAME }} ${{ env.TAG }}"
+          files: workspace/output/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
