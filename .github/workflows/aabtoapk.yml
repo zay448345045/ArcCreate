@@ -16,7 +16,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
 
-      - name: Set up JDK 
+      - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
@@ -24,15 +24,23 @@ jobs:
 
       - name: Download and Setup bundletool
         run: |
-          BUNDLETOOL_VERSION=$(curl -s https://api.github.com/repos/google/bundletool/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          wget https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar -O bundletool.jar
+          echo "Fetching latest bundletool version..."
+          # 使用更严谨的正则提取 tag_name 里的版本号（例如去除 v 前缀和多余引号）
+          BUNDLETOOL_VERSION=$(curl -s https://api.github.com/repos/google/bundletool/releases/latest | grep '"tag_name":' | head -n 1 | sed -E 's/.*"v?([^"]+)".*/\1/')
+          
+          # 如果获取失败，兜底写死一个稳定版本
+          if [ -z "$BUNDLETOOL_VERSION" ]; then
+            BUNDLETOOL_VERSION="1.17.2"
+          fi
+          
+          echo "Using bundletool version: $BUNDLETOOL_VERSION"
+          wget "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar" -O bundletool.jar
 
       - name: Parse URL and Fetch Assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           URL: ${{ inputs.release_url }}
         run: |
-          # 自动从类似 https://github.com/owner/repo/releases/tag/tag_name 的链接中解析参数
           CLEAN_URL=${URL#https://github.com/}
           OWNER=$(echo "$CLEAN_URL" | cut -d'/' -f1)
           REPO=$(echo "$CLEAN_URL" | cut -d'/' -f2)
@@ -84,7 +92,6 @@ jobs:
 
           rm -rf workspace/output/*.apks extracted_temp workspace/output/extracted_*
           
-          # 把解析出来的 tag 存到环境变量文件供下一步使用
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "REPO_NAME=$REPO" >> $GITHUB_ENV
 
